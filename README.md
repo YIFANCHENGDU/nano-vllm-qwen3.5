@@ -43,6 +43,17 @@ outputs = llm.generate(prompts, sampling_params)
 outputs[0]["text"]
 ```
 
+### 4-bit Quantization (AWQ)
+
+To reduce GPU memory usage, load an [AWQ](https://github.com/castor-ai/autoawq)-quantized model checkpoint and pass `quantization="awq"`:
+
+```python
+# Install autoawq first: pip install nano-vllm[awq]
+llm = LLM("/YOUR/AWQ/MODEL/PATH", quantization="awq", enforce_eager=True)
+```
+
+If the model's `config.json` already contains a `quantization_config` block (e.g. it was saved as an AWQ model), the quantization type is detected automatically and the `quantization` argument is not required.
+
 ## Benchmark
 
 See `bench.py` for benchmark.
