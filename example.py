@@ -6,7 +6,11 @@ from transformers import AutoTokenizer
 def main():
     path = os.path.expanduser("~/huggingface/Qwen3-0.6B/")
     tokenizer = AutoTokenizer.from_pretrained(path)
+    # Pass quantization="awq" to explicitly enable 4-bit AWQ inference and
+    # reduce GPU memory usage when using an AWQ-quantized model checkpoint.
     llm = LLM(path, enforce_eager=True, tensor_parallel_size=1)
+    # Example with explicit 4-bit quantization:
+    # llm = LLM(path, enforce_eager=True, tensor_parallel_size=1, quantization="awq")
 
     sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
     prompts = [
