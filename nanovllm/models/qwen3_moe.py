@@ -28,7 +28,6 @@ class Qwen3MoeAttention(nn.Module):
         head_dim: int | None = None,
         rms_norm_eps: float = 1e-06,
         rope_theta: float = 10000,
-        rope_scaling: tuple | None = None,
     ) -> None:
         super().__init__()
         tp_size = dist.get_world_size()
@@ -60,7 +59,6 @@ class Qwen3MoeAttention(nn.Module):
             rotary_dim=self.head_dim,
             max_position=max_position,
             base=rope_theta,
-            rope_scaling=rope_scaling,
         )
         self.attn = Attention(
             self.num_heads,
@@ -220,7 +218,6 @@ class Qwen3MoeDecoderLayer(nn.Module):
             rms_norm_eps=config.rms_norm_eps,
             head_dim=getattr(config, "head_dim", None),
             rope_theta=getattr(config, "rope_theta", 1000000),
-            rope_scaling=getattr(config, "rope_scaling", None),
         )
         # Decide dense vs sparse (MoE) MLP for this layer.
         is_moe_layer = (
