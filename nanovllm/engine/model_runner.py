@@ -7,9 +7,19 @@ from multiprocessing.shared_memory import SharedMemory
 from nanovllm.config import Config
 from nanovllm.engine.sequence import Sequence
 from nanovllm.models.qwen3 import Qwen3ForCausalLM
+from nanovllm.models.qwen3_moe import Qwen3MoeForCausalLM
+from nanovllm.layers.linear import set_quant_config
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
+
+
+def _get_model_class(hf_config):
+    """Return the appropriate model class for the given HuggingFace config."""
+    model_type = getattr(hf_config, "model_type", "")
+    if model_type == "qwen3_moe":
+        return Qwen3MoeForCausalLM
+    return Qwen3ForCausalLM
 
 
 class ModelRunner:
@@ -28,8 +38,15 @@ class ModelRunner:
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
-        self.model = Qwen3ForCausalLM(hf_config)
-        load_model(self.model, config.model)
+        # Activate quantization (e.g. AWQ) before model construction so that
+        # the linear layer factories can create the right layer types.
+        set_quant_config(config.quant_config)
+        try:
+            model_class = _get_model_class(hf_config)
+            self.model = model_class(hf_config)
+            load_model(self.model, config.model)
+        finally:
+            set_quant_config(None)
         self.sampler = Sampler()
         self.warmup_model()
         self.allocate_kv_cache()

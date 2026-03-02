@@ -16,6 +16,7 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
+    quant_config: dict | None = None
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
@@ -24,3 +25,10 @@ class Config:
         self.hf_config = AutoConfig.from_pretrained(self.model)
         self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
         assert self.max_num_batched_tokens >= self.max_model_len
+        # Detect quantization configuration embedded in the model config.
+        raw_qc = getattr(self.hf_config, "quantization_config", None)
+        if raw_qc is not None:
+            if hasattr(raw_qc, "to_dict"):
+                raw_qc = raw_qc.to_dict()
+            # Normalize to a plain dict with lowercase keys.
+            self.quant_config = {k.lower(): v for k, v in raw_qc.items()}

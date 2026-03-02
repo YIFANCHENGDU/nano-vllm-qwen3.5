@@ -19,6 +19,11 @@ dependencies = [
     "xxhash",
 ]
 
+[project.optional-dependencies]
+# Install for AWQ 4-bit quantization support:
+#   pip install nano-vllm[awq]
+awq = ["autoawq>=0.2.0"]
+
 [project.urls]
 Homepage="https://github.com/GeeeekExplorer/nano-vllm"
 
