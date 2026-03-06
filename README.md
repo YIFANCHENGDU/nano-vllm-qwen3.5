@@ -43,16 +43,77 @@ outputs = llm.generate(prompts, sampling_params)
 outputs[0]["text"]
 ```
 
-### 4-bit Quantization (AWQ)
+### INT4 Quantized Inference (AWQ / W4A16)
 
-To reduce GPU memory usage, load an [AWQ](https://github.com/castor-ai/autoawq)-quantized model checkpoint and pass `quantization="awq"`:
+Nano-vLLM includes a built-in Triton-based INT4 W4A16 inference path that
+requires **no external quantization library**.  Activations are kept in FP16;
+only weights are stored in packed INT4 format (8 nibbles per int32, AWQ layout).
 
-```python
-# Install autoawq first: pip install nano-vllm[awq]
-llm = LLM("/YOUR/AWQ/MODEL/PATH", quantization="awq", enforce_eager=True)
+#### How it works
+
+```
+Checkpoint (qweight / qzeros / scales)
+        │
+        ▼  load_model()
+AWQ linear parameters on GPU
+        │
+        ▼  process_weights_after_loading()   ← one-time preprocessing
+scaled_zeros = unpack(qzeros) * scales       ← [K//gs, N] fp16
+        │
+        ▼  forward pass
+Triton kernel: fused dequantize + GEMM
+  for each (BLOCK_M × BLOCK_N) tile:
+    w = qw_int4 * scale − scaled_zero   (in tiles, no dense FP16 alloc)
+    acc += x @ w
 ```
 
-If the model's `config.json` already contains a `quantization_config` block (e.g. it was saved as an AWQ model), the quantization type is detected automatically and the `quantization` argument is not required.
+#### Kernel-priority fallback chain
+
+| Priority | Condition | Kernel |
+|----------|-----------|--------|
+| 1 | CUDA available + preprocessing done | Triton INT4 W4A16 |
+| 2 | `autoawq` installed | autoawq WQLinearMMFunction |
+| 3 | always | pure-PyTorch dequantize + F.linear |
+
+#### Usage
+
+```python
+from nanovllm import LLM, SamplingParams
+
+# Option A – model checkpoint already contains quantization_config (AWQ)
+llm = LLM("/YOUR/AWQ/MODEL/PATH", enforce_eager=True)
+
+# Option B – pass the quantization type explicitly
+llm = LLM("/YOUR/AWQ/MODEL/PATH", quantization="awq", enforce_eager=True)
+
+sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
+outputs = llm.generate(["Hello, Nano-vLLM."], sampling_params)
+print(outputs[0]["text"])
+```
+
+The AWQ model can be obtained with the
+[autoawq](https://github.com/castor-ai/autoawq) quantisation toolkit:
+
+```bash
+# Download a pre-quantised AWQ model from Hugging Face, e.g.:
+huggingface-cli download --resume-download Qwen/Qwen3-0.6B-AWQ \
+  --local-dir ~/huggingface/Qwen3-0.6B-AWQ/ \
+  --local-dir-use-symlinks False
+```
+
+If you want to use the optional `autoawq` GEMM kernel (fallback path 2) for
+benchmarking or compatibility, install it alongside the package:
+
+```bash
+pip install nano-vllm[awq]   # pulls in autoawq>=0.2.0
+```
+
+#### Memory savings
+
+| Precision | Qwen3-0.6B VRAM |
+|-----------|-----------------|
+| BF16 (default) | ~1.2 GB |
+| INT4 AWQ       | ~0.4 GB |
 
 ## Benchmark
 

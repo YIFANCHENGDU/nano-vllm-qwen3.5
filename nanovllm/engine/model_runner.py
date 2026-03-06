@@ -45,6 +45,13 @@ class ModelRunner:
             model_class = _get_model_class(hf_config)
             self.model = model_class(hf_config)
             load_model(self.model, config.model)
+            # Preprocessing/repacking step: convert checkpoint layout (packed
+            # int4 zero-points) into kernel-friendly format (precomputed
+            # scaled_zeros).  Called on every module that exposes the hook so
+            # that quantized layers can prepare their weights once, up-front.
+            for module in self.model.modules():
+                if hasattr(module, "process_weights_after_loading"):
+                    module.process_weights_after_loading()
         finally:
             set_quant_config(None)
         self.sampler = Sampler()
