@@ -336,6 +336,68 @@ class TestConfigQuantNormalization(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Tests for Config model path resolution and validation error messages
+# ---------------------------------------------------------------------------
+
+class TestConfigResolveModelPath(unittest.TestCase):
+    """Verify _resolve_model_path and Config validation error messages."""
+
+    def test_local_path_returned_unchanged(self):
+        """A valid local directory is returned as-is."""
+        import tempfile
+        from nanovllm.config import _resolve_model_path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(_resolve_model_path(tmpdir), tmpdir)
+
+    def test_nonexistent_local_path_raises_without_huggingface_hub(self):
+        """A path that doesn't exist and is not a HF model ID raises ValueError
+        (or downloads if huggingface_hub is present)."""
+        import sys
+        from unittest.mock import patch
+        from nanovllm.config import _resolve_model_path
+
+        # Temporarily block the huggingface_hub import to test the error path.
+        with patch.dict(sys.modules, {"huggingface_hub": None}):
+            with self.assertRaises((ValueError, ImportError)):
+                _resolve_model_path("/nonexistent/model/path/xyz")
+
+    def test_bad_quantization_raises_value_error(self):
+        """Unsupported quantization name raises ValueError with a descriptive message."""
+        from nanovllm.config import Config
+        import tempfile
+
+        # The ValueError is raised before AutoConfig.from_pretrained, so no
+        # need to mock transformers or create a real config.json.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(ValueError) as ctx:
+                Config(model=tmpdir, quantization="gptq")
+            self.assertIn("gptq", str(ctx.exception))
+            self.assertIn("Unsupported", str(ctx.exception))
+
+    def test_max_num_batched_tokens_too_small_raises_value_error(self):
+        """max_num_batched_tokens < max_model_len raises ValueError."""
+        import sys
+        import tempfile
+        from unittest.mock import MagicMock, patch
+        from nanovllm.config import Config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # The check for max_num_batched_tokens happens after
+            # AutoConfig.from_pretrained, so we mock transformers here.
+            mock_hf = MagicMock()
+            mock_hf.max_position_embeddings = 200  # > max_model_len=100
+
+            mock_transformers = MagicMock()
+            mock_transformers.AutoConfig.from_pretrained.return_value = mock_hf
+
+            # max_num_batched_tokens=50 < max_model_len=100
+            with patch.dict(sys.modules, {"transformers": mock_transformers}):
+                with self.assertRaises(ValueError) as ctx:
+                    Config(model=tmpdir, max_model_len=100, max_num_batched_tokens=50)
+            self.assertIn("max_num_batched_tokens", str(ctx.exception))
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
