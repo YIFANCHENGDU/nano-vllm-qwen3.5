@@ -91,13 +91,76 @@ class AWQLinearBase(nn.Module):
         else:
             self.register_parameter("bias", None)
 
+        # Precomputed scaled zero-points; populated by process_weights_after_loading().
+        # Shape [in_features // group_size, out_features] fp16.
+        self._scaled_zeros: torch.Tensor | None = None
+
+    def process_weights_after_loading(self) -> None:
+        """Preprocess weights after loading for efficient Triton-based inference.
+
+        Converts the packed ``qzeros`` tensor into a float16 ``scaled_zeros``
+        tensor (shape ``[K//gs, N]``) where each element equals the
+        corresponding unpacked zero-point multiplied by its scale:
+
+            scaled_zeros[kg, n] = unpack(qzeros[kg, n//8], n%8) * scales[kg, n]
+
+        This one-time transformation lets the inner kernel loop skip the
+        zero-point unpacking step, reducing per-step arithmetic.
+        """
+        try:
+            from nanovllm.kernels.int4_gemm import preprocess_awq_weights
+            _, _, self._scaled_zeros = preprocess_awq_weights(
+                self.qweight, self.qzeros, self.scales, self.w_bit
+            )
+        except (ImportError, RuntimeError, ValueError):
+            # Non-fatal: _awq_forward will fall back to autoawq / dequantize.
+            self._scaled_zeros = None
+
     def _awq_forward(self, x: torch.Tensor, bias=None) -> torch.Tensor:
-        """Run the AWQ GEMM kernel, falling back to dequantize+matmul."""
+        """Run INT4 inference using the best available kernel.
+
+        Priority order:
+          1. Triton fused dequantize-GEMM kernel (if CUDA and preprocessing done)
+          2. autoawq WQLinearMMFunction (if autoawq installed)
+          3. Pure-PyTorch dequantize + F.linear (always available)
+        """
+        out_shape = x.shape[:-1] + (self.out_features,)
+        inp_dtype = x.dtype
+
+        # ------------------------------------------------------------------
+        # Path 1: Triton INT4 W4A16 kernel
+        # ------------------------------------------------------------------
+        if (
+            self._scaled_zeros is not None
+            and x.is_cuda
+        ):
+            try:
+                from nanovllm.kernels.int4_gemm import int4_gemm
+                if inp_dtype != torch.float16:
+                    x_fp16 = x.half()
+                else:
+                    x_fp16 = x
+                out = int4_gemm(
+                    x_fp16,
+                    self.qweight,
+                    self.scales,
+                    self._scaled_zeros,
+                    out_features=self.out_features,
+                )
+                if inp_dtype != torch.float16:
+                    out = out.to(inp_dtype)
+                if bias is not None:
+                    out = out + bias
+                return out.reshape(out_shape)
+            except (ImportError, RuntimeError):
+                pass
+
+        # ------------------------------------------------------------------
+        # Path 2: autoawq GEMM kernel
+        # ------------------------------------------------------------------
         awq_fn = _get_awq_gemm_fn()
         if awq_fn is not None:
             try:
-                out_shape = x.shape[:-1] + (self.out_features,)
-                inp_dtype = x.dtype
                 if inp_dtype != torch.float16:
                     x = x.half()
                 with torch.no_grad():
@@ -110,7 +173,10 @@ class AWQLinearBase(nn.Module):
                 return out.reshape(out_shape)
             except RuntimeError:
                 pass
-        # Fallback: dequantize then standard matmul (correct but slower)
+
+        # ------------------------------------------------------------------
+        # Path 3: fallback — full dequantize then standard matmul
+        # ------------------------------------------------------------------
         weight = self._dequantize()
         return F.linear(x, weight, bias)
 
