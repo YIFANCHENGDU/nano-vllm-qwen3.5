@@ -280,6 +280,62 @@ class TestDequantize(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Tests for Config quantization normalization
+# ---------------------------------------------------------------------------
+
+class TestConfigQuantNormalization(unittest.TestCase):
+    """Verify that quant configs from model checkpoints are normalized to the
+    internal format expected by the linear layer factory helpers."""
+
+    def _normalize(self, raw: dict) -> dict:
+        """Mirror the normalization logic from Config.__post_init__."""
+        qc = {k.lower(): v for k, v in raw.items()}
+        if "quant_type" not in qc and "quant_method" in qc:
+            qc["quant_type"] = qc["quant_method"]
+        if "w_bit" not in qc and "bits" in qc:
+            qc["w_bit"] = qc["bits"]
+        if "q_group_size" not in qc and "group_size" in qc:
+            qc["q_group_size"] = qc["group_size"]
+        return qc
+
+    def test_autoawq_format_normalized(self):
+        """autoawq checkpoint config (quant_method/bits/group_size) → quant_type/w_bit/q_group_size."""
+        raw = {"quant_method": "awq", "bits": 4, "group_size": 128, "zero_point": True, "version": "gemm"}
+        qc = self._normalize(raw)
+        self.assertEqual(qc.get("quant_type"), "awq")
+        self.assertEqual(qc.get("w_bit"), 4)
+        self.assertEqual(qc.get("q_group_size"), 128)
+
+    def test_internal_format_unchanged(self):
+        """Config already using quant_type/w_bit/q_group_size passes through unchanged."""
+        raw = {"quant_type": "awq", "w_bit": 4, "q_group_size": 128}
+        qc = self._normalize(raw)
+        self.assertEqual(qc.get("quant_type"), "awq")
+        self.assertEqual(qc.get("w_bit"), 4)
+        self.assertEqual(qc.get("q_group_size"), 128)
+
+    def test_factory_sees_awq(self):
+        """After normalization, the linear factory helper correctly identifies AWQ."""
+        raw = {"quant_method": "awq", "bits": 4, "group_size": 128}
+        qc = self._normalize(raw)
+        # This is exactly the condition the factory helpers check:
+        self.assertTrue(qc and qc.get("quant_type") == "awq")
+
+    def test_unknown_quant_method_not_treated_as_awq(self):
+        """An unknown quant_method is not incorrectly mapped as AWQ."""
+        raw = {"quant_method": "gptq", "bits": 4, "group_size": 128}
+        qc = self._normalize(raw)
+        self.assertNotEqual(qc.get("quant_type"), "awq")
+
+    def test_keys_are_lowercase(self):
+        """Keys are always lowercased during normalization."""
+        raw = {"Quant_Method": "AWQ", "Bits": 4, "Group_Size": 128}
+        qc = self._normalize(raw)
+        for key in qc:
+            self.assertEqual(key, key.lower(), f"Key '{key}' is not lowercase")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

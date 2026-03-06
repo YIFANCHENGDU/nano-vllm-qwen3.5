@@ -47,7 +47,17 @@ class Config:
             if hasattr(raw_qc, "to_dict"):
                 raw_qc = raw_qc.to_dict()
             # Normalize to a plain dict with lowercase keys.
-            self.quant_config = {k.lower(): v for k, v in raw_qc.items()}
+            raw_qc = {k.lower(): v for k, v in raw_qc.items()}
+            # Normalize key names used by different AWQ serialisation conventions
+            # (e.g. autoawq uses 'quant_method'/'bits'/'group_size' while our
+            # internal format uses 'quant_type'/'w_bit'/'q_group_size').
+            if "quant_type" not in raw_qc and "quant_method" in raw_qc:
+                raw_qc["quant_type"] = raw_qc["quant_method"]
+            if "w_bit" not in raw_qc and "bits" in raw_qc:
+                raw_qc["w_bit"] = raw_qc["bits"]
+            if "q_group_size" not in raw_qc and "group_size" in raw_qc:
+                raw_qc["q_group_size"] = raw_qc["group_size"]
+            self.quant_config = raw_qc
         elif self.quantization is not None:
             # Use the explicitly requested quantization when the model config
             # does not embed its own quantization_config.
